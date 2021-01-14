@@ -29,6 +29,10 @@ namespace JsonByExampleGenerator.Example
                     }
                 };
 
+            var x = product.Demo;
+
+            var date = product.At;
+
             Console.WriteLine($"id={product.Id}");
             Console.WriteLine($"name={product.Name}");
 

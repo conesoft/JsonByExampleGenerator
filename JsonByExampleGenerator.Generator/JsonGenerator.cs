@@ -1,18 +1,14 @@
+using JsonByExampleGenerator.Generator.Models;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Text;
+using Pluralize.NET;
 using System;
-using System.IO;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Text;
-using Microsoft.CodeAnalysis.Emit;
-using System.Reflection;
-using Pluralize.NET;
-using JsonByExampleGenerator.Generator.Models;
-using System.Globalization;
 
 namespace JsonByExampleGenerator.Generator
 {
@@ -28,7 +24,7 @@ namespace JsonByExampleGenerator.Generator
                 foreach (var jsonFile in context.AdditionalFiles.Where(f => f.Path.EndsWith(".json", StringComparison.InvariantCultureIgnoreCase)))
                 {
                     var jsonFileText = jsonFile.GetText(context.CancellationToken);
-                    if(jsonFileText == null)
+                    if (jsonFileText == null)
                     {
                         continue;
                     }
@@ -66,18 +62,19 @@ namespace JsonByExampleGenerator.Generator
 
                             string result = $@"
 {extensionMethod}
-    public partial class {c.ClassName}
+    public partial record {c.ClassName}
     {{
 {string.Join("\r\n", c.Properties.Select(p => RenderProperty(p)))}
 {configReadMethod}
     }}";
 
                             return result;
-    });
+                        });
 
                     var optionalDependencies = configEnabled ? "\r\nusing Microsoft.Extensions.Configuration;" : string.Empty;
 
                     string generatedCode = $@"#nullable disable
+using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;{optionalDependencies}
 
@@ -101,7 +98,7 @@ namespace {namespaceName}.Json
                         message,
                         "JsonByExampleGenerator",
                         DiagnosticSeverity.Error,
-                        isEnabledByDefault: true), 
+                        isEnabledByDefault: true),
                     Location.None));
             }
         }
@@ -109,7 +106,7 @@ namespace {namespaceName}.Json
         private static string RenderProperty(PropertyModel propertyModel)
         {
             string init = propertyModel.Init != null ? $" = {propertyModel.Init};" : string.Empty;
-            return $"[JsonPropertyName(\"{propertyModel.PropertyNameOriginal}\")]\r\n        public {propertyModel.PropertyType} {propertyModel.PropertyName} {{ get; set; }}{init}";
+            return $"        [JsonPropertyName(\"{propertyModel.PropertyNameOriginal}\")] public {propertyModel.PropertyType} {propertyModel.PropertyName} {{ get; init; }}{init}";
         }
 
         private static void RenderType(GeneratorExecutionContext context, List<ClassModel> classModels, JsonElement jsonElement, string namespaceName, string typeName)
@@ -134,63 +131,74 @@ namespace {namespaceName}.Json
                 {
                     PropertyModel propertyModel;
 
-                    switch (prop.Value.ValueKind)
+                    var valueAsString = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : null;
+                    if (valueAsString != null && valueAsString.StartsWith("c#:", StringComparison.OrdinalIgnoreCase))
                     {
-                        case JsonValueKind.Array:
-                            {
-                                string arrPropName = GetValidName(prop.Name, true);
-
-                                var arrEnumerator = prop.Value.EnumerateArray();
-                                if(arrEnumerator.MoveNext())
+                        var value = valueAsString.Substring("c#:".Length); 
+                       
+                        propertyModel = new PropertyModel(prop.Name, value, propName);
+                    }
+                    else
+                    {
+                        switch (prop.Value.ValueKind)
+                        {
+                            case JsonValueKind.Array:
                                 {
-                                    if (arrEnumerator.Current.ValueKind == JsonValueKind.Number)
-                                    {
-                                        arrPropName = "double";
-                                    }
-                                    else if (arrEnumerator.Current.ValueKind == JsonValueKind.String)
-                                    {
-                                        arrPropName = "string";
-                                    }
-                                    else if (arrEnumerator.Current.ValueKind == JsonValueKind.True || arrEnumerator.Current.ValueKind == JsonValueKind.False)
-                                    {
-                                        arrPropName = "bool";
-                                    }
-                                    else
-                                    {
-                                        RenderType(context, classModels, prop.Value, namespaceName, arrPropName);
-                                    }
+                                    string arrPropName = GetValidName(prop.Name, true);
 
-                                    propertyModel = new PropertyModel(prop.Name, $"IList<{arrPropName}>", propName)
+                                    var arrEnumerator = prop.Value.EnumerateArray();
+                                    if (arrEnumerator.MoveNext())
+                                    {
+                                        if (arrEnumerator.Current.ValueKind == JsonValueKind.Number)
+                                        {
+                                            arrPropName = "double";
+                                        }
+                                        else if (arrEnumerator.Current.ValueKind == JsonValueKind.String)
+                                        {
+                                            arrPropName = "string";
+                                        }
+                                        else if (arrEnumerator.Current.ValueKind == JsonValueKind.True || arrEnumerator.Current.ValueKind == JsonValueKind.False)
+                                        {
+                                            arrPropName = "bool";
+                                        }
+                                        else
+                                        {
+                                            RenderType(context, classModels, prop.Value, namespaceName, arrPropName);
+                                        }
+
+                                        propertyModel = new PropertyModel(prop.Name, $"IList<{arrPropName}>", propName)
                                         {
                                             Init = $"new List<{arrPropName}>()"
                                         };
-                                }
-                                else
-                                {
-                                    propertyModel = new PropertyModel(prop.Name, $"IList<object>", propName)
+                                    }
+                                    else
+                                    {
+                                        propertyModel = new PropertyModel(prop.Name, $"IList<object>", propName)
                                         {
                                             Init = $"new List<object>()"
                                         };
+                                    }
+
+                                    break;
                                 }
+                            case JsonValueKind.String: propertyModel = new PropertyModel(prop.Name, "string", propName); break;
+                            case JsonValueKind.Number: propertyModel = new PropertyModel(prop.Name, "double", propName); break;
+                            case JsonValueKind.False:
+                            case JsonValueKind.True: propertyModel = new PropertyModel(prop.Name, "bool", propName); break;
+                            case JsonValueKind.Object:
+                                {
+                                    string objectPropName = GetValidName(prop.Name, true);
+                                    RenderType(context, classModels, prop.Value, namespaceName, objectPropName);
 
-                                break;
-                            }
-                        case JsonValueKind.String: propertyModel = new PropertyModel(prop.Name, "string", propName); break;
-                        case JsonValueKind.Number: propertyModel = new PropertyModel(prop.Name, "double", propName); break;
-                        case JsonValueKind.False:
-                        case JsonValueKind.True: propertyModel = new PropertyModel(prop.Name, "bool", propName); break;
-                        case JsonValueKind.Object:
-                            {
-                                string objectPropName = GetValidName(prop.Name, true);
-                                RenderType(context, classModels, prop.Value, namespaceName, objectPropName);
-
-                                propertyModel = new PropertyModel(prop.Name, objectPropName, propName);
-                                break;
-                            }
-                        case JsonValueKind.Undefined:
-                        case JsonValueKind.Null:
-                        default: propertyModel = new PropertyModel(prop.Name, "object", propName); break;
+                                    propertyModel = new PropertyModel(prop.Name, objectPropName, propName);
+                                    break;
+                                }
+                            case JsonValueKind.Undefined:
+                            case JsonValueKind.Null:
+                            default: propertyModel = new PropertyModel(prop.Name, "object", propName); break;
+                        }
                     }
+
 
                     classModel.Properties.Add(propertyModel);
                 }
@@ -216,14 +224,14 @@ namespace {namespaceName}.Json
 
             List<char> newTypeName = new List<char>();
             bool nextCharUpper = true;
-            for(int i = 0; i < typeName.Length; i++)
+            for (int i = 0; i < typeName.Length; i++)
             {
                 if (typeName[i] == ' ')
                 {
                     nextCharUpper = true;
                     continue;
                 }
-                
+
                 if (nextCharUpper)
                 {
                     nextCharUpper = false;

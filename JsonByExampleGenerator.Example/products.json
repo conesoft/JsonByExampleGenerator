@@ -1,6 +1,8 @@
 [
   {
     "id": 12,
+    "at": "c#:DateTime",
+    "demo": "c#:int",
     "name": "Example product",
     "colorVariants": [
       {
